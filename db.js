@@ -5,7 +5,7 @@
 const fs = require('fs');
 const path = require('path');
 
-const COLLECTIONS = ['users', 'payments', 'notifications', 'feedback', 'counters'];
+const COLLECTIONS = ['users', 'payments', 'notifications', 'feedback', 'counters', 'courses', 'lessons', 'schools'];
 
 function matches(doc, query) {
   for (const [k, cond] of Object.entries(query || {})) {
@@ -61,6 +61,16 @@ function createFileDb() {
       Object.assign(d, set); save(); return true;
     },
     async count(q) { return data[name].filter((x) => matches(x, q)).length; },
+    async deleteOne(q) {
+      const i = data[name].findIndex((x) => matches(x, q));
+      if (i === -1) return false;
+      data[name].splice(i, 1); save(); return true;
+    },
+    async deleteMany(q) {
+      const before = data[name].length;
+      data[name] = data[name].filter((x) => !matches(x, q)); save();
+      return before - data[name].length;
+    },
   });
 
   return {
@@ -85,6 +95,10 @@ async function createMongoDb(uri) {
   await db.collection('users').createIndex({ id: 1 }, { unique: true });
   await db.collection('payments').createIndex({ id: 1 }, { unique: true });
   await db.collection('notifications').createIndex({ createdAt: -1 });
+  await db.collection('courses').createIndex({ id: 1 }, { unique: true });
+  await db.collection('lessons').createIndex({ id: 1 }, { unique: true });
+  await db.collection('lessons').createIndex({ courseId: 1, order: 1 });
+  await db.collection('schools').createIndex({ district: 1 });
 
   const col = (name) => {
     const c = db.collection(name);
@@ -100,6 +114,8 @@ async function createMongoDb(uri) {
       async insertOne(doc) { await c.insertOne({ ...doc }); return doc; },
       async updateOne(q, set) { const r = await c.updateOne(q, { $set: set }); return r.matchedCount > 0; },
       async count(q) { return c.countDocuments(q); },
+      async deleteOne(q) { const r = await c.deleteOne(q); return r.deletedCount > 0; },
+      async deleteMany(q) { const r = await c.deleteMany(q); return r.deletedCount; },
     };
   };
 

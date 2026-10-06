@@ -86,3 +86,23 @@ Ilova server uxlasa ham ochiladi, lekin to'lov va Telegram javoblari tezroq bo'l
 - APK'ni telefonga yuklab, o'rnating ("Noma'lum manbalar"ga ruxsat bering).
 - Server manzilini o'rnatish: **Profil → "Ilova versiyasi" yozuviga 7 marta bosing** → Render manzilingizni kiriting.
 - Yangilanishlarni bir xil imzo bilan chiqarish uchun `vector-release.keystore` faylini va parolini **yo'qotmang** — busiz eski ilova ustiga yangisini o'rnatib bo'lmaydi.
+
+
+## 10. Video darslar (Cloudflare R2) — v2
+
+1. dash.cloudflare.com → **R2 Object Storage** → to'lov kartasini (Visa/Mastercard) qo'shib R2'ni yoqing.
+2. **Create bucket** → nom: `vector-videos` → Create.
+3. Bucket → **Settings → CORS Policy** → admin panelning **Tizim holati** sahifasidagi matnni joylang.
+4. R2 sahifasida **API Tokens → Create API token** → ruxsat: **Object Read & Write**, faqat `vector-videos` bucket → Create.
+   Chiqqan **Access Key ID** va **Secret Access Key**ni saqlab qo'ying (faqat bir marta ko'rsatiladi). **Account ID** R2 bosh sahifasida yozilgan.
+5. Render → Environment: `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET=vector-videos`.
+6. Admin panel → **Kurslar va darslar** → kurs yarating → dars qo'shing → «Video yuklash».
+
+## 11. Maktablar ro'yxati
+
+Admin panel → **Maktablar** → viloyat va tumanni tanlab, «1-45, Prezident maktabi» kabi yozing.
+Ro'yxat bo'sh tumanlarda o'quvchi maktab raqamini o'zi yozadi.
+
+## 12. Tarif narxlari
+
+`server.js` faylining boshida `PLANS` bo'limida. O'zgartirsangiz, ilova narxlarni serverdan o'zi oladi.

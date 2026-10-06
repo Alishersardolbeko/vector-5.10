@@ -6,6 +6,9 @@ const crypto = require('crypto');
 const path = require('path');
 const { connect } = require('./db');
 const tg = require('./telegram');
+const geo = require('./geo');
+const r2 = require('./r2');
+const coursesModule = require('./courses');
 
 const PORT = process.env.PORT || 3000;
 const PUBLIC_URL = (process.env.PUBLIC_URL || `http://localhost:${PORT}`).replace(/\/$/, '');
@@ -20,11 +23,23 @@ const CLICK = {
   secretKey: process.env.CLICK_SECRET_KEY || '',
 };
 
+// Tariflar: har biri oylik va yillik. Narxlarni shu yerda o'zgartirasiz.
+const BASE_FEATURES = ["Barcha yo'nalish bo'yicha videodarslar", 'Kurs yakunida sertifikat'];
 const PLANS = {
-  start: { key: 'start', name: 'Start', title: '1 oylik (Start)', price: 49000, days: 30, perk: 'Asosiy imkoniyatlar' },
-  pro: { key: 'pro', name: 'Pro', title: '1 oylik (Pro)', price: 69000, days: 30, perk: 'Mentor bilan ishlash' },
-  vip: { key: 'vip', name: 'VIP', title: '1 oylik (VIP)', price: 89000, days: 30, perk: 'Barcha imkoniyatlar + diplom' },
+  start: { key: 'start', name: 'Start', rank: 1,
+    month: { price: 69000, days: 30 },
+    year: { price: 708000, days: 365, perMonth: 59000, oldPrice: 828000 },
+    features: [...BASE_FEATURES] },
+  pro: { key: 'pro', name: 'Pro', rank: 2,
+    month: { price: 89000, days: 30 },
+    year: { price: 948000, days: 365, perMonth: 79000, oldPrice: 1068000 },
+    features: [...BASE_FEATURES, "Shaxsiy mentor ko'magi", "Vector loyihasiga qo'shilish imkoniyati"] },
+  vip: { key: 'vip', name: 'VIP', rank: 3,
+    month: { price: 110000, days: 30 },
+    year: { price: 1188000, days: 365, perMonth: 99000, oldPrice: 1320000 },
+    features: [...BASE_FEATURES, "Shaxsiy mentor ko'magi", "Vector loyihasiga qo'shilish imkoniyati", 'Ish topishda nazariy yordam'] },
 };
+const PERIOD_NAME = { month: 'oylik', year: 'yillik' };
 
 if (!process.env.JWT_SECRET) console.warn("⚠️  JWT_SECRET yo'q — server qayta ishga tushsa, hamma tizimdan chiqib ketadi");
 if (!CLICK.secretKey) console.warn("⚠️  CLICK_SECRET_KEY yo'q — Click to'lovlari ishlamaydi");
@@ -83,6 +98,12 @@ function publicUser(u) {
     plan: active ? u.plan : null,
     planName: active ? PLANS[u.plan]?.name || u.plan : null,
     planExpiresAt: active ? u.planExpiresAt : null,
+    planPeriod: active ? u.planPeriod || 'month' : null,
+    region: u.region || null,
+    regionName: (geo.findRegion(u.region) || {}).name || null,
+    district: u.district || null,
+    school: u.school || null,
+    grade: u.grade || null,
     coins: u.coins || 0,
     telegramLinked: Boolean(u.telegramChatId),
     createdAt: u.createdAt,
@@ -162,12 +183,12 @@ app.use(express.urlencoded({ extended: false })); // Click so'rovlari form ko'ri
 app.use((req, res, next) => {
   res.set('Access-Control-Allow-Origin', '*');
   res.set('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.set('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
+  res.set('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
   if (req.method === 'OPTIONS') return res.sendStatus(204);
   next();
 });
 
-app.get('/health', (req, res) => res.json({ status: 'ok', platform: 'Vector', db: db?.mode, telegram: tg.enabled, bot: tg.BOT_USERNAME || null, time: now() }));
+app.get('/health', (req, res) => res.json({ status: 'ok', platform: 'Vector', db: db?.mode, telegram: tg.enabled, bot: tg.BOT_USERNAME || null, r2: r2.enabled, time: now() }));
 app.get('/', (req, res) => res.send('🚀 Vector platformasi serveri ishlamoqda'));
 
 tg.mount(app);
@@ -200,13 +221,21 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   if (firstName.length < 2) return fail(res, 400, 'Ismingizni kiriting');
   if (lastName.length < 2) return fail(res, 400, 'Familiyangizni kiriting');
   if (password.length < 6) return fail(res, 400, "Parol kamida 6 ta belgidan iborat bo'lsin");
+  const region = String(req.body.region || '');
+  const district = String(req.body.district || '');
+  const school = String(req.body.school || '').trim().slice(0, 120);
+  const grade = String(req.body.grade || '');
+  if (!geo.findRegion(region)) return fail(res, 400, 'Viloyatingizni tanlang');
+  if (!geo.validDistrict(region, district)) return fail(res, 400, 'Shahar yoki tumaningizni tanlang');
+  if (school.length < 1) return fail(res, 400, 'Maktabingizni kiriting');
+  if (!geo.GRADES.includes(grade)) return fail(res, 400, 'Sinfingizni tanlang');
   if (await users().findOne({ phone })) return fail(res, 409, "Bu raqam allaqachon ro'yxatdan o'tgan");
 
   const tgInfo = tg.consume(req.body.verifyToken, phone, 'register');
   if (!tgInfo) return fail(res, 400, 'Raqam tasdiqlanmagan yoki tasdiqlash muddati tugagan');
 
   const u = {
-    id: uid(), phone, firstName, lastName,
+    id: uid(), phone, firstName, lastName, region, district, school, grade,
     password: hashPassword(password),
     telegramChatId: tgInfo.chatId || null,
     plan: null, planExpiresAt: null, coins: 0,
@@ -214,7 +243,7 @@ app.post('/api/auth/register', wrap(async (req, res) => {
   };
   await users().insertOne(u);
   tg.sendMessage(u.telegramChatId, `🎉 Xush kelibsiz, ${escapeHtml(firstName)}! Vector'da hisobingiz yaratildi.\n\nTo'lovlar va yangiliklar haqida shu yerda xabar beramiz.`);
-  notifyAdmin(`🆕 Yangi foydalanuvchi: ${escapeHtml(firstName)} ${escapeHtml(lastName)} (+${fullPhone(phone)})`);
+  notifyAdmin(`🆕 Yangi foydalanuvchi: ${escapeHtml(firstName)} ${escapeHtml(lastName)} (+${fullPhone(phone)})\n${escapeHtml(geo.findRegion(region).name)}, ${escapeHtml(district)}, ${escapeHtml(school)}, ${escapeHtml(grade)}`);
   res.json({ token: signToken({ role: 'user', uid: u.id }), user: publicUser(u) });
 }));
 
@@ -244,6 +273,22 @@ app.post('/api/auth/reset-password', wrap(async (req, res) => {
 
 app.get('/api/auth/me', wrap(auth), (req, res) => res.json({ user: publicUser(req.user) }));
 
+// Eski foydalanuvchilar (yoki xato kiritganlar) ma'lumotlarini to'ldirishi uchun
+app.post('/api/auth/profile', wrap(auth), wrap(async (req, res) => {
+  const set = {};
+  const b = req.body;
+  if (b.firstName !== undefined) { const v = String(b.firstName).trim().slice(0, 40); if (v.length < 2) return fail(res, 400, 'Ismingizni kiriting'); set.firstName = v; }
+  if (b.lastName !== undefined) { const v = String(b.lastName).trim().slice(0, 40); if (v.length < 2) return fail(res, 400, 'Familiyangizni kiriting'); set.lastName = v; }
+  if (b.region !== undefined || b.district !== undefined) {
+    if (!geo.validDistrict(String(b.region), String(b.district))) return fail(res, 400, 'Viloyat va tumanni tanlang');
+    set.region = String(b.region); set.district = String(b.district);
+  }
+  if (b.school !== undefined) { const v = String(b.school).trim().slice(0, 120); if (!v) return fail(res, 400, 'Maktabingizni kiriting'); set.school = v; }
+  if (b.grade !== undefined) { if (!geo.GRADES.includes(String(b.grade))) return fail(res, 400, 'Sinfingizni tanlang'); set.grade = String(b.grade); }
+  await users().updateOne({ id: req.user.id }, set);
+  res.json({ user: publicUser({ ...req.user, ...set }) });
+}));
+
 app.post('/api/auth/change-password', wrap(auth), wrap(async (req, res) => {
   const { oldPassword, newPassword } = req.body;
   if (!checkPassword(oldPassword, req.user.password)) return fail(res, 400, "Joriy parol noto'g'ri");
@@ -255,13 +300,19 @@ app.post('/api/auth/change-password', wrap(auth), wrap(async (req, res) => {
 // ---------------- Tariflar va to'lov ----------------
 app.get('/api/plans', (req, res) => res.json({ plans: Object.values(PLANS) }));
 
+function pickPlan(key, period) {
+  const plan = PLANS[key];
+  const per = period === 'year' ? 'year' : 'month';
+  return plan ? { plan, period: per, price: plan[per].price, days: plan[per].days } : null;
+}
+
 app.post('/api/payments/create', wrap(auth), wrap(async (req, res) => {
-  const plan = PLANS[req.body.plan];
-  if (!plan) return fail(res, 400, 'Tarif topilmadi');
+  const pick = pickPlan(req.body.plan, req.body.period);
+  if (!pick) return fail(res, 400, 'Tarif topilmadi');
   if (!CLICK.secretKey) return fail(res, 503, "To'lov tizimi hali sozlanmagan");
   const id = String(await db.nextSeq('payment'));
   const p = {
-    id, userId: req.user.id, phone: req.user.phone, plan: plan.key, amount: plan.price,
+    id, userId: req.user.id, phone: req.user.phone, plan: pick.plan.key, period: pick.period, amount: pick.price,
     provider: 'click', status: 'pending', createdAt: now(),
   };
   await payments().insertOne(p);
@@ -269,7 +320,7 @@ app.post('/api/payments/create', wrap(auth), wrap(async (req, res) => {
   const payUrl = 'https://my.click.uz/services/pay?' + new URLSearchParams({
     service_id: CLICK.serviceId,
     merchant_id: CLICK.merchantId,
-    amount: String(plan.price),
+    amount: String(pick.price),
     transaction_param: id,
     return_url: returnUrl,
   }).toString();
@@ -310,17 +361,21 @@ async function activatePlan(payment) {
   const u = await users().findOne({ id: payment.userId });
   if (!u) return;
   const plan = PLANS[payment.plan];
-  const base = u.planExpiresAt && u.planExpiresAt > now() ? u.planExpiresAt : now();
-  const expires = base + plan.days * 864e5;
-  await users().updateOne({ id: u.id }, { plan: plan.key, planExpiresAt: expires });
+  const period = payment.period === 'year' ? 'year' : 'month';
+  const active = u.plan && u.planExpiresAt > now();
+  const base = active ? u.planExpiresAt : now();
+  const expires = base + plan[period].days * 864e5;
+  // Faol obuna bo'lsa, muddat qo'shiladi va yuqoriroq tarif saqlanadi
+  const tier = active && (PLANS[u.plan]?.rank || 0) > plan.rank ? u.plan : plan.key;
+  await users().updateOne({ id: u.id }, { plan: tier, planPeriod: period, planExpiresAt: expires });
   await createNotification({
     userId: u.id,
     type: 'payment',
     title: "🎉 To'lov qabul qilindi",
-    body: `${plan.name} obunasi uchun ${plan.price.toLocaleString('ru-RU')} so'm to'lovingiz muvaffaqiyatli amalga oshirildi. Obuna ${new Date(expires).toLocaleDateString('ru-RU')} gacha faol. Rahmat!`,
+    body: `${plan.name} (${PERIOD_NAME[period]}) obunasi uchun ${payment.amount.toLocaleString('ru-RU')} so'm to'lovingiz muvaffaqiyatli amalga oshirildi. Obuna ${new Date(expires).toLocaleDateString('ru-RU')} gacha faol. Rahmat!`,
     telegram: true,
   });
-  notifyAdmin(`💰 Yangi to'lov: ${plan.name} — ${plan.price} so'm\n${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)} (+${fullPhone(u.phone)})`);
+  notifyAdmin(`💰 Yangi to'lov: ${plan.name} (${PERIOD_NAME[period]}) — ${payment.amount} so'm\n${escapeHtml(u.firstName)} ${escapeHtml(u.lastName)} (+${fullPhone(u.phone)})`);
 }
 
 app.post('/api/click/prepare', wrap(async (req, res) => {
@@ -441,6 +496,9 @@ app.get('/api/admin/stats', adminAuth, wrap(async (req, res) => {
     paidCount: paid.length,
     telegram: tg.enabled,
     click: Boolean(CLICK.secretKey),
+    r2: r2.enabled,
+    courses: await db.col('courses').count({}),
+    lessons: await db.col('lessons').count({}),
     db: db.mode,
   });
 }));
@@ -448,8 +506,8 @@ app.get('/api/admin/stats', adminAuth, wrap(async (req, res) => {
 app.get('/api/admin/users', adminAuth, wrap(async (req, res) => {
   const q = String(req.query.q || '').toLowerCase().trim();
   let list = await users().find({}, { sort: { createdAt: -1 } });
-  if (q) list = list.filter((u) => `${u.firstName} ${u.lastName} ${u.phone}`.toLowerCase().includes(q.replace(/^\+?998/, '')));
-  res.json({ items: list.slice(0, 300).map((u) => ({ ...publicUser(u), blocked: Boolean(u.blocked), lastLoginAt: u.lastLoginAt || null })), total: list.length });
+  if (q) list = list.filter((u) => `${u.firstName} ${u.lastName} ${u.phone} ${u.district || ''} ${u.school || ''}`.toLowerCase().includes(q.replace(/^\+?998/, '')));
+  res.json({ items: list.slice(0, 1000).map((u) => ({ ...publicUser(u), blocked: Boolean(u.blocked), lastLoginAt: u.lastLoginAt || null })), total: list.length });
 }));
 
 app.post('/api/admin/users/:id/plan', adminAuth, wrap(async (req, res) => {
@@ -461,9 +519,9 @@ app.post('/api/admin/users/:id/plan', adminAuth, wrap(async (req, res) => {
   }
   const plan = PLANS[req.body.plan];
   if (!plan) return fail(res, 400, 'Tarif topilmadi');
-  const days = Math.max(1, Math.min(3650, Number(req.body.days) || plan.days));
+  const days = Math.max(1, Math.min(3650, Number(req.body.days) || 30));
   const expires = now() + days * 864e5;
-  await users().updateOne({ id: u.id }, { plan: plan.key, planExpiresAt: expires });
+  await users().updateOne({ id: u.id }, { plan: plan.key, planPeriod: days >= 365 ? 'year' : 'month', planExpiresAt: expires });
   await createNotification({ userId: u.id, type: 'payment', title: `⭐ ${plan.name} obunasi faollashtirildi`, body: `Sizga ${days} kunlik ${plan.name} obunasi berildi. Yoqimli o'qish!`, telegram: true });
   res.json({ ok: true });
 }));
@@ -501,6 +559,9 @@ app.post('/api/admin/notify', adminAuth, wrap(async (req, res) => {
 app.get('/api/admin/feedback', adminAuth, wrap(async (req, res) => {
   res.json({ items: await feedback().find({}, { sort: { createdAt: -1 }, limit: 200 }) });
 }));
+
+// ---------------- Kurslar, darslar, video, maktablar ----------------
+coursesModule.setup(app, { db: () => db, auth: wrap(auth), optionalAuth: wrap(optionalAuth), adminAuth, wrap, fail });
 
 // ---------------- Xatolar ----------------
 app.use((req, res) => fail(res, 404, 'Topilmadi'));
