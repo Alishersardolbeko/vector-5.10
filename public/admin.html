@@ -891,6 +891,9 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
           ${row(s.click, 'Click to\'lov', 'To\'lovlar qabul qilinadi', 'Ulanmagan', 'CLICK_SECRET_KEY kerak')}
           ${row(s.r2, 'Cloudflare R2 (videolar)', `Videolar yuklanadi va himoyalangan holda ko'rsatiladi · ${s.courses} ta kurs, ${s.lessons} ta dars`, 'Ulanmagan', 'R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY va R2_BUCKET kerak')}
         </div></div>
+        <div class="card" style="margin-top:18px"><div class="card__head"><h3>Cloudflare R2 tekshiruvi</h3>
+          <button class="btn btn--primary btn--sm" style="margin-left:auto" onclick="testR2(this)">R2'ni tekshirish</button></div>
+          <div class="card__body" id="r2-test"><p class="page__sub">Video yuklashda xato chiqsa, shu tugmani bosing — qaysi sozlama noto'g'ri ekanini ko'rsatadi.</p></div></div>
         <div class="card" style="margin-top:18px"><div class="card__head"><h3>R2 bucket uchun CORS sozlamasi</h3></div><div class="card__body">
           <p class="page__sub" style="margin-bottom:10px">Cloudflare → R2 → bucket → Settings → CORS Policy bo'limiga shu matnni joylang. Busiz admin paneldan video yuklab bo'lmaydi.</p>
           <pre style="background:var(--bg);border:1px solid var(--line);border-radius:12px;padding:14px;overflow:auto;font-size:13px;user-select:all">${esc(JSON.stringify([{ AllowedOrigins: [location.origin], AllowedMethods: ['GET', 'PUT', 'HEAD'], AllowedHeaders: ['*'], ExposeHeaders: ['ETag'], MaxAgeSeconds: 3600 }], null, 2))}</pre>
@@ -1138,7 +1141,7 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
       if ((location.hash || '').indexOf('#courses?id=') === 0) route(true);
     };
     xhr.onload = () => finish(xhr.status >= 200 && xhr.status < 300, "Yuklashda xato (" + xhr.status + "). R2 CORS sozlamasini tekshiring");
-    xhr.onerror = () => finish(false, "Yuklash uzildi. Internetni va R2 CORS sozlamasini tekshiring");
+    xhr.onerror = () => finish(false, "Yuklab bo'lmadi. «Tizim holati» → «R2'ni tekshirish» tugmasini bosing — sababini ko'rsatadi");
     xhr.onabort = () => finish(false, "Yuklash to'xtatildi");
     xhr.open('PUT', r.uploadUrl);
     xhr.setRequestHeader('Content-Type', file.type || 'video/mp4');
@@ -1222,6 +1225,18 @@ table.table { width: 100%; border-collapse: collapse; font-size: 14px; }
     const region = $('s-region').value, district = $('s-district').value;
     if (!name && !confirm(district + " uchun barcha maktablar o'chirilsinmi?")) return;
     try { await api('/api/admin/schools/delete', { method: 'POST', body: { region, district, name, all: !name } }); loadSchools(); } catch (e) { notify(e.message, 'error'); }
+  }
+
+  async function testR2(btn) {
+    btn.disabled = true; $('r2-test').innerHTML = empty('⏳', 'Tekshirilmoqda...');
+    try {
+      const r = await api('/api/admin/r2-test?origin=' + encodeURIComponent(location.origin));
+      $('r2-test').innerHTML = r.steps.map(s => `<div class="switchbox" style="margin-bottom:10px">
+        <div><div class="table__main">${esc(s.name)}</div><div class="table__sub">${esc(s.detail)}</div></div>
+        <span class="badge ${s.ok ? 'badge--ok' : 'badge--danger'}">${s.ok ? '✓ OK' : '✕ Xato'}</span></div>`).join('') +
+        (r.ok ? '<p class="page__sub" style="margin-top:8px">Hammasi joyida — video yuklashingiz mumkin.</p>' : '');
+    } catch (e) { $('r2-test').innerHTML = empty('⚠️', esc(e.message)); }
+    finally { btn.disabled = false; }
   }
 
   /* ================= Filtrlar va amallar ================= */

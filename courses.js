@@ -210,6 +210,10 @@ function setup(app, { db, auth, optionalAuth, adminAuth, wrap, fail }) {
     res.json({ ok: true });
   }));
 
+  app.get('/api/admin/r2-test', adminAuth, wrap(async (req, res) => {
+    res.json(await r2.diagnose(String(req.query.origin || '').slice(0, 200)));
+  }));
+
   app.get('/api/admin/lessons/:id/preview', adminAuth, wrap(async (req, res) => {
     const l = await lessons().findOne({ id: req.params.id });
     if (!l || !l.videoKey) return fail(res, 404, 'Video yo\'q');
